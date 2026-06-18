@@ -7,7 +7,7 @@
              mc:Ignorable="d" 
              d:DesignHeight="450" d:DesignWidth="800">
     <Grid>
-        <TextBox TextChanged="EncodedGearTextBox_TextChanged" ToolTip="Import/Export String" ToolTipService.InitialShowDelay="0" Padding="2"
+        <TextBox TextChanged="EncodedGearTextBox_TextChanged" ToolTip="Import/Export String (also accepts WowSimsExporter JSON)" ToolTipService.InitialShowDelay="0" Padding="2"
                  PreviewKeyDown="EncodedGearTextBox_PreviewKeyDown" MouseDoubleClick="SelectAll" GotKeyboardFocus="SelectAll" PreviewMouseLeftButtonDown="SelectivelyIgnoreMouseButton"
                  x:Name="EncodedGearTextBox">
             <TextBox.ContextMenu>

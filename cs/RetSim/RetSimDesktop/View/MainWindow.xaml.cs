@@ -4,6 +4,7 @@ using System;
 using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Threading;
 
 namespace RetSimDesktop
@@ -100,6 +101,71 @@ namespace RetSimDesktop
             StatWeightsButton.IsEnabled = true;
             CsDelayButton.IsEnabled = false;
             StatisticsButton.IsEnabled = true;
+        }
+
+        private void ImportGear_Click(object sender, RoutedEventArgs e)
+        {
+            var dialog = new Window
+            {
+                Title = "Import Gear — WowSimsExporter",
+                Width = 600,
+                Height = 350,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Owner = this,
+                ResizeMode = ResizeMode.CanResizeWithGrip
+            };
+
+            var panel = new DockPanel { Margin = new Thickness(10) };
+
+            var label = new TextBlock
+            {
+                Text = "Paste your WowSimsExporter JSON below and click Import:",
+                Margin = new Thickness(0, 0, 0, 8)
+            };
+            DockPanel.SetDock(label, Dock.Top);
+            panel.Children.Add(label);
+
+            var buttonPanel = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Margin = new Thickness(0, 8, 0, 0)
+            };
+            var importButton = new Button { Content = "Import", Width = 80, Margin = new Thickness(0, 0, 8, 0), IsDefault = true };
+            var cancelButton = new Button { Content = "Cancel", Width = 80, IsCancel = true };
+            buttonPanel.Children.Add(importButton);
+            buttonPanel.Children.Add(cancelButton);
+            DockPanel.SetDock(buttonPanel, Dock.Bottom);
+            panel.Children.Add(buttonPanel);
+
+            var textBox = new TextBox
+            {
+                AcceptsReturn = true,
+                TextWrapping = TextWrapping.Wrap,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                FontFamily = new System.Windows.Media.FontFamily("Consolas")
+            };
+            panel.Children.Add(textBox);
+
+            importButton.Click += (s, args) =>
+            {
+                string json = textBox.Text.Trim();
+                if (string.IsNullOrEmpty(json) || !json.StartsWith("{"))
+                {
+                    MessageBox.Show("Please paste a valid WowSimsExporter JSON string (starts with '{').",
+                        "Invalid Input", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                GearPlannerInputField.ImportFromWowSimsExporter(json, DataContext as RetSimUIModel);
+                Gear_Click(null, null);
+                dialog.Close();
+            };
+
+            cancelButton.Click += (s, args) => dialog.Close();
+
+            dialog.Content = panel;
+            dialog.ShowDialog();
         }
 
         public void SwitchToGearSelection(int slot)

@@ -1,9 +1,11 @@
 ﻿using RetSim.Data;
 using RetSim.Items;
+using RetSim.Units.Player.Static;
 using RetSimDesktop.ViewModel;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -36,6 +38,42 @@ namespace RetSimDesktop
             { EquipmentSlots.Relic, 18 },
             { EquipmentSlots.Weapon, 16 },
         };
+
+        private static readonly Dictionary<int, int> WowSimsIndexToAlternativeSlot = new()
+        {
+            { 0, 1 },    // Head
+            { 1, 2 },    // Neck
+            { 2, 3 },    // Shoulders
+            { 3, 15 },   // Back
+            { 4, 5 },    // Chest
+            { 5, 9 },    // Wrists
+            { 6, 10 },   // Hands
+            { 7, 6 },    // Waist
+            { 8, 7 },    // Legs
+            { 9, 8 },    // Feet
+            { 10, 11 },  // Finger1
+            { 11, 12 },  // Finger2
+            { 12, 13 },  // Trinket1
+            { 13, 14 },  // Trinket2
+            { 14, 16 },  // Main Hand Weapon
+            // 15 = Off Hand, skipped for Ret
+            { 16, 18 },  // Ranged/Relic
+        };
+
+        private static Dictionary<int, int>? enchantmentIdToInternalId;
+
+        private static Dictionary<int, int> GetEnchantmentIdLookup()
+        {
+            if (enchantmentIdToInternalId == null)
+            {
+                enchantmentIdToInternalId = new();
+                foreach (var enchant in Items.Enchants.Values)
+                {
+                    enchantmentIdToInternalId.TryAdd(enchant.EnchantmentID, enchant.ID);
+                }
+            }
+            return enchantmentIdToInternalId;
+        }
 
         private bool disable = false;
 
@@ -130,6 +168,13 @@ namespace RetSimDesktop
         {
             if (DataContext is RetSimUIModel retSimUIModel && retSimUIModel.SelectedGear != null && MediaMetaData.ItemsMetaData != null && !disable)
             {
+                string text = EncodedGearTextBox.Text.Trim();
+                if (text.StartsWith("{"))
+                {
+                    ImportWowSimsExporter(text, retSimUIModel);
+                    return;
+                }
+
                 try
                 {
                     disable = true;
@@ -227,156 +272,347 @@ namespace RetSimDesktop
             }
         }
 
+        private static readonly Dictionary<string, Races> RaceNameToEnum = new(StringComparer.OrdinalIgnoreCase)
+        {
+            { "Human", Races.Human },
+            { "Dwarf", Races.Dwarf },
+            { "Draenei", Races.Draenei },
+            { "BloodElf", Races.BloodElf },
+        };
+
+        private static int GetTalentRank(string treeString, int position)
+        {
+            if (position < treeString.Length && char.IsDigit(treeString[position]))
+                return treeString[position] - '0';
+            return 0;
+        }
+
+        private static void ApplyTalents(string talentString, RetSimUIModel model)
+        {
+            var trees = talentString.Split('-');
+            string holy = trees.Length > 0 ? trees[0] : "";
+            string prot = trees.Length > 1 ? trees[1] : "";
+            string ret = trees.Length > 2 ? trees[2] : "";
+
+            var t = model.SelectedTalents;
+
+            int r;
+
+            r = GetTalentRank(holy, 0);
+            t.DivineStrengthEnabled = r > 0;
+            if (r > 0) t.DivineStrengthRank = r;
+
+            r = GetTalentRank(holy, 1);
+            t.DivineIntellectEnabled = r > 0;
+            if (r > 0) t.DivineIntellectRank = r;
+
+            r = GetTalentRank(prot, 2);
+            t.PrecisionEnabled = r > 0;
+            if (r > 0) t.PrecisionRank = r;
+
+            r = GetTalentRank(ret, 1);
+            t.BenedictionEnabled = r > 0;
+            if (r > 0) t.BenedictionRank = r;
+
+            r = GetTalentRank(ret, 2);
+            t.ImprovedJudgementEnabled = r > 0;
+            if (r > 0) t.ImprovedJudgementRank = r;
+
+            r = GetTalentRank(ret, 6);
+            t.ConvictionEnabled = r > 0;
+            if (r > 0) t.ConvictionRank = r;
+
+            r = GetTalentRank(ret, 11);
+            t.CrusadeEnabled = r > 0;
+            if (r > 0) t.CrusadeRank = r;
+
+            r = GetTalentRank(ret, 12);
+            t.TwoHandedWeaponSpecializationEnabled = r > 0;
+            if (r > 0) t.TwoHandedWeaponSpecializationRank = r;
+
+            t.SanctityAuraEnabled = GetTalentRank(ret, 13) > 0;
+
+            r = GetTalentRank(ret, 14);
+            t.ImprovedSanctityAuraEnabled = r > 0;
+            if (r > 0) t.ImprovedSanctityAuraRank = r;
+
+            r = GetTalentRank(ret, 15);
+            t.VengeanceEnabled = r > 0;
+            if (r > 0) t.VengeanceRank = r;
+
+            r = GetTalentRank(ret, 16);
+            t.SanctifiedJudgementEnabled = r > 0;
+            if (r > 0) t.SanctifiedJudgementRank = r;
+
+            r = GetTalentRank(ret, 17);
+            t.SanctifiedSealsEnabled = r > 0;
+            if (r > 0) t.SanctifiedSealsRank = r;
+
+            r = GetTalentRank(ret, 20);
+            t.FanaticismEnabled = r > 0;
+            if (r > 0) t.FanaticismRank = r;
+        }
+
+        public static void ImportFromWowSimsExporter(string json, RetSimUIModel retSimUIModel)
+        {
+            try
+            {
+                retSimUIModel.SelectedGear.ClearSelectedGear();
+
+                var enchantLookup = GetEnchantmentIdLookup();
+
+                using var doc = JsonDocument.Parse(json);
+                var root = doc.RootElement;
+
+                if (root.TryGetProperty("race", out var raceProp))
+                {
+                    string raceName = raceProp.GetString() ?? "";
+                    if (RaceNameToEnum.TryGetValue(raceName, out var race))
+                        retSimUIModel.PlayerSettings.SelectedRace = race;
+                }
+
+                if (root.TryGetProperty("talents", out var talentsProp))
+                {
+                    string talentString = talentsProp.GetString() ?? "";
+                    if (!string.IsNullOrEmpty(talentString))
+                        ApplyTalents(talentString, retSimUIModel);
+                }
+
+                if (!root.TryGetProperty("gear", out var gearElement) ||
+                    !gearElement.TryGetProperty("items", out var itemsElement))
+                {
+                    retSimUIModel.SelectedGear.OnPropertyChanged("");
+                    return;
+                }
+
+                int missingItems = 0;
+                int missingEnchants = 0;
+                int missingGems = 0;
+                int index = 0;
+                foreach (var itemElement in itemsElement.EnumerateArray())
+                {
+                    int currentIndex = index++;
+
+                    if (itemElement.ValueKind == JsonValueKind.Null)
+                        continue;
+
+                    if (!WowSimsIndexToAlternativeSlot.TryGetValue(currentIndex, out int altSlot))
+                        continue;
+
+                    if (!itemElement.TryGetProperty("id", out var idProp))
+                        continue;
+
+                    int itemId = idProp.GetInt32();
+
+                    bool isWeapon = altSlot == 16;
+                    bool itemExists = isWeapon
+                        ? retSimUIModel.AllWeapons.ContainsKey(itemId)
+                        : retSimUIModel.AllGear.ContainsKey(itemId);
+
+                    if (!itemExists)
+                    {
+                        missingItems++;
+                        continue;
+                    }
+
+                    int internalEnchantId = -1;
+                    if (itemElement.TryGetProperty("enchant", out var enchantProp))
+                    {
+                        int enchantmentId = enchantProp.GetInt32();
+                        if (enchantLookup.TryGetValue(enchantmentId, out int resolvedId))
+                            internalEnchantId = resolvedId;
+                        else
+                            missingEnchants++;
+                    }
+
+                    SetSelectedGearForSlot(altSlot, itemId, internalEnchantId, retSimUIModel);
+
+                    if (itemElement.TryGetProperty("gems", out var gemsElement) &&
+                        Items.AllItems.ContainsKey(itemId))
+                    {
+                        var item = Items.AllItems[itemId];
+                        for (int s = 0; s < item.Sockets.Length; s++)
+                        {
+                            if (item.Sockets[s] != null)
+                                item.Sockets[s].SocketedGem = null;
+                        }
+
+                        int socketIndex = 0;
+                        foreach (var gemElement in gemsElement.EnumerateArray())
+                        {
+                            if (gemElement.ValueKind == JsonValueKind.Null || gemElement.GetInt32() == 0)
+                            {
+                                socketIndex++;
+                                continue;
+                            }
+
+                            int gemId = gemElement.GetInt32();
+
+                            while (socketIndex < item.Sockets.Length && item.Sockets[socketIndex] == null)
+                                socketIndex++;
+
+                            if (socketIndex >= item.Sockets.Length)
+                                break;
+
+                            if (item.Sockets[socketIndex].Color == SocketColor.Meta && Items.MetaGems.ContainsKey(gemId))
+                                item.Sockets[socketIndex].SocketedGem = Items.MetaGems[gemId];
+                            else if (Items.Gems.ContainsKey(gemId))
+                                item.Sockets[socketIndex].SocketedGem = Items.Gems[gemId];
+                            else
+                                missingGems++;
+
+                            socketIndex++;
+                        }
+                    }
+                }
+
+                if (missingItems > 0 || missingEnchants > 0 || missingGems > 0)
+                {
+                    var parts = new List<string>();
+                    if (missingItems > 0) parts.Add($"{missingItems} item(s)");
+                    if (missingEnchants > 0) parts.Add($"{missingEnchants} enchant(s)");
+                    if (missingGems > 0) parts.Add($"{missingGems} gem(s)");
+                    MessageBox.Show($"{string.Join(", ", parts)} not found in RetSim's database and skipped.",
+                        "WowSimsExporter Import", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+
+                retSimUIModel.SelectedGear.OnPropertyChanged("");
+            }
+            catch (Exception)
+            {
+                retSimUIModel.SelectedGear.OnPropertyChanged("");
+            }
+        }
+
+        private void ImportWowSimsExporter(string json, RetSimUIModel retSimUIModel)
+        {
+            disable = true;
+            foreach (int alternativeSlot in SlotNumberToAlternativeSlotNumber.Values)
+            {
+                SetSelectedGearAlternativeSlotToID(alternativeSlot, 0, -5);
+            }
+            ImportFromWowSimsExporter(json, retSimUIModel);
+            disable = false;
+        }
+
         private void SetSelectedGearAlternativeSlotToID(int slot, int id, int enchantId)
         {
             if (DataContext is RetSimUIModel retSimUIModel)
+                SetSelectedGearForSlot(slot, id, enchantId, retSimUIModel);
+        }
+
+        private static void SetSelectedGearForSlot(int slot, int id, int enchantId, RetSimUIModel retSimUIModel)
+        {
+            switch (slot)
             {
-                switch (slot)
-                {
-                    case 1:
-                        if (retSimUIModel.AllGear.ContainsKey(id))
-                            retSimUIModel.SelectedGear.SelectedHead = retSimUIModel.AllGear[id];
-                        if (Items.Enchants.ContainsKey(enchantId))
-                            retSimUIModel.SelectedGear.HeadEnchant = Items.Enchants[enchantId];
-                        else
-                        {
-                            retSimUIModel.SelectedGear.HeadEnchant = retSimUIModel.EnchantsBySlot[Slot.Head][0];
-                        }
-
-                        break;
-                    case 2:
-                        if (retSimUIModel.AllGear.ContainsKey(id))
-                        {
-                            retSimUIModel.SelectedGear.SelectedNeck = retSimUIModel.AllGear[id];
-                        }
-                        break;
-                    case 3:
-                        if (retSimUIModel.AllGear.ContainsKey(id))
-                            retSimUIModel.SelectedGear.SelectedShoulders = retSimUIModel.AllGear[id];
-                        if (Items.Enchants.ContainsKey(enchantId))
-                            retSimUIModel.SelectedGear.ShouldersEnchant = Items.Enchants[enchantId];
-                        else
-                        {
-                            retSimUIModel.SelectedGear.ShouldersEnchant = retSimUIModel.EnchantsBySlot[Slot.Shoulders][0];
-                        }
-
-                        break;
-                    case 5:
-                        if (retSimUIModel.AllGear.ContainsKey(id))
-                            retSimUIModel.SelectedGear.SelectedChest = retSimUIModel.AllGear[id];
-                        if (Items.Enchants.ContainsKey(enchantId))
-                            retSimUIModel.SelectedGear.ChestEnchant = Items.Enchants[enchantId];
-                        else
-                        {
-                            retSimUIModel.SelectedGear.ChestEnchant = retSimUIModel.EnchantsBySlot[Slot.Chest][0];
-                        }
-
-                        break;
-                    case 6:
-                        if (retSimUIModel.AllGear.ContainsKey(id))
-                            retSimUIModel.SelectedGear.SelectedWaist = retSimUIModel.AllGear[id];
-                        break;
-                    case 7:
-                        if (retSimUIModel.AllGear.ContainsKey(id))
-                            retSimUIModel.SelectedGear.SelectedLegs = retSimUIModel.AllGear[id];
-                        if (Items.Enchants.ContainsKey(enchantId))
-                            retSimUIModel.SelectedGear.LegsEnchant = Items.Enchants[enchantId];
-                        else
-                        {
-                            retSimUIModel.SelectedGear.LegsEnchant = retSimUIModel.EnchantsBySlot[Slot.Legs][0];
-                        }
-
-                        break;
-                    case 8:
-                        if (retSimUIModel.AllGear.ContainsKey(id))
-                            retSimUIModel.SelectedGear.SelectedFeet = retSimUIModel.AllGear[id];
-                        if (Items.Enchants.ContainsKey(enchantId))
-                            retSimUIModel.SelectedGear.FeetEnchant = Items.Enchants[enchantId];
-                        else
-                        {
-                            retSimUIModel.SelectedGear.FeetEnchant = retSimUIModel.EnchantsBySlot[Slot.Feet][0];
-                        }
-
-                        break;
-                    case 9:
-                        if (retSimUIModel.AllGear.ContainsKey(id))
-                            retSimUIModel.SelectedGear.SelectedWrists = retSimUIModel.AllGear[id];
-                        if (Items.Enchants.ContainsKey(enchantId))
-                            retSimUIModel.SelectedGear.WristsEnchant = Items.Enchants[enchantId];
-                        else
-                        {
-                            retSimUIModel.SelectedGear.WristsEnchant = retSimUIModel.EnchantsBySlot[Slot.Wrists][0];
-                        }
-
-                        break;
-                    case 10:
-                        if (retSimUIModel.AllGear.ContainsKey(id))
-                            retSimUIModel.SelectedGear.SelectedHands = retSimUIModel.AllGear[id];
-                        if (Items.Enchants.ContainsKey(enchantId))
-                            retSimUIModel.SelectedGear.HandsEnchant = Items.Enchants[enchantId];
-                        else
-                        {
-                            retSimUIModel.SelectedGear.HandsEnchant = retSimUIModel.EnchantsBySlot[Slot.Hands][0];
-                        }
-
-                        break;
-                    case 11:
-                        if (retSimUIModel.AllGear.ContainsKey(id))
-                            retSimUIModel.SelectedGear.SelectedFinger1 = retSimUIModel.AllGear[id];
-                        if (Items.Enchants.ContainsKey(enchantId))
-                            retSimUIModel.SelectedGear.Finger1Enchant = Items.Enchants[enchantId];
-                        else
-                        {
-                            retSimUIModel.SelectedGear.Finger1Enchant = retSimUIModel.EnchantsBySlot[Slot.Finger][0];
-                        }
-
-                        break;
-                    case 12:
-                        if (retSimUIModel.AllGear.ContainsKey(id))
-                            retSimUIModel.SelectedGear.SelectedFinger2 = retSimUIModel.AllGear[id];
-                        if (Items.Enchants.ContainsKey(enchantId))
-                            retSimUIModel.SelectedGear.Finger2Enchant = Items.Enchants[enchantId];
-                        else
-                        {
-                            retSimUIModel.SelectedGear.Finger2Enchant = retSimUIModel.EnchantsBySlot[Slot.Finger][0];
-                        }
-
-                        break;
-                    case 13:
-                        if (retSimUIModel.AllGear.ContainsKey(id))
-                            retSimUIModel.SelectedGear.SelectedTrinket1 = retSimUIModel.AllGear[id];
-                        break;
-                    case 14:
-                        if (retSimUIModel.AllGear.ContainsKey(id))
-                            retSimUIModel.SelectedGear.SelectedTrinket2 = retSimUIModel.AllGear[id];
-                        break;
-                    case 15:
-                        if (retSimUIModel.AllGear.ContainsKey(id))
-                            retSimUIModel.SelectedGear.SelectedBack = retSimUIModel.AllGear[id];
-                        if (Items.Enchants.ContainsKey(enchantId))
-                            retSimUIModel.SelectedGear.BackEnchant = Items.Enchants[enchantId];
-                        else
-                        {
-                            retSimUIModel.SelectedGear.BackEnchant = retSimUIModel.EnchantsBySlot[Slot.Back][0];
-                        }
-
-                        break;
-                    case 16:
-                        if (retSimUIModel.AllWeapons.ContainsKey(id))
-                            retSimUIModel.SelectedGear.SelectedWeapon = retSimUIModel.AllWeapons[id];
-                        if (Items.Enchants.ContainsKey(enchantId))
-                            retSimUIModel.SelectedGear.WeaponEnchant = Items.Enchants[enchantId];
-                        else
-                        {
-                            retSimUIModel.SelectedGear.WeaponEnchant = retSimUIModel.EnchantsBySlot[Slot.Weapon][0];
-                        }
-
-                        break;
-                    case 18:
-                        if (retSimUIModel.AllGear.ContainsKey(id))
-                            retSimUIModel.SelectedGear.SelectedRelic = retSimUIModel.AllGear[id];
-                        break;
-                }
+                case 1:
+                    if (retSimUIModel.AllGear.ContainsKey(id))
+                        retSimUIModel.SelectedGear.SelectedHead = retSimUIModel.AllGear[id];
+                    if (Items.Enchants.ContainsKey(enchantId))
+                        retSimUIModel.SelectedGear.HeadEnchant = Items.Enchants[enchantId];
+                    else
+                        retSimUIModel.SelectedGear.HeadEnchant = retSimUIModel.EnchantsBySlot[Slot.Head][0];
+                    break;
+                case 2:
+                    if (retSimUIModel.AllGear.ContainsKey(id))
+                        retSimUIModel.SelectedGear.SelectedNeck = retSimUIModel.AllGear[id];
+                    break;
+                case 3:
+                    if (retSimUIModel.AllGear.ContainsKey(id))
+                        retSimUIModel.SelectedGear.SelectedShoulders = retSimUIModel.AllGear[id];
+                    if (Items.Enchants.ContainsKey(enchantId))
+                        retSimUIModel.SelectedGear.ShouldersEnchant = Items.Enchants[enchantId];
+                    else
+                        retSimUIModel.SelectedGear.ShouldersEnchant = retSimUIModel.EnchantsBySlot[Slot.Shoulders][0];
+                    break;
+                case 5:
+                    if (retSimUIModel.AllGear.ContainsKey(id))
+                        retSimUIModel.SelectedGear.SelectedChest = retSimUIModel.AllGear[id];
+                    if (Items.Enchants.ContainsKey(enchantId))
+                        retSimUIModel.SelectedGear.ChestEnchant = Items.Enchants[enchantId];
+                    else
+                        retSimUIModel.SelectedGear.ChestEnchant = retSimUIModel.EnchantsBySlot[Slot.Chest][0];
+                    break;
+                case 6:
+                    if (retSimUIModel.AllGear.ContainsKey(id))
+                        retSimUIModel.SelectedGear.SelectedWaist = retSimUIModel.AllGear[id];
+                    break;
+                case 7:
+                    if (retSimUIModel.AllGear.ContainsKey(id))
+                        retSimUIModel.SelectedGear.SelectedLegs = retSimUIModel.AllGear[id];
+                    if (Items.Enchants.ContainsKey(enchantId))
+                        retSimUIModel.SelectedGear.LegsEnchant = Items.Enchants[enchantId];
+                    else
+                        retSimUIModel.SelectedGear.LegsEnchant = retSimUIModel.EnchantsBySlot[Slot.Legs][0];
+                    break;
+                case 8:
+                    if (retSimUIModel.AllGear.ContainsKey(id))
+                        retSimUIModel.SelectedGear.SelectedFeet = retSimUIModel.AllGear[id];
+                    if (Items.Enchants.ContainsKey(enchantId))
+                        retSimUIModel.SelectedGear.FeetEnchant = Items.Enchants[enchantId];
+                    else
+                        retSimUIModel.SelectedGear.FeetEnchant = retSimUIModel.EnchantsBySlot[Slot.Feet][0];
+                    break;
+                case 9:
+                    if (retSimUIModel.AllGear.ContainsKey(id))
+                        retSimUIModel.SelectedGear.SelectedWrists = retSimUIModel.AllGear[id];
+                    if (Items.Enchants.ContainsKey(enchantId))
+                        retSimUIModel.SelectedGear.WristsEnchant = Items.Enchants[enchantId];
+                    else
+                        retSimUIModel.SelectedGear.WristsEnchant = retSimUIModel.EnchantsBySlot[Slot.Wrists][0];
+                    break;
+                case 10:
+                    if (retSimUIModel.AllGear.ContainsKey(id))
+                        retSimUIModel.SelectedGear.SelectedHands = retSimUIModel.AllGear[id];
+                    if (Items.Enchants.ContainsKey(enchantId))
+                        retSimUIModel.SelectedGear.HandsEnchant = Items.Enchants[enchantId];
+                    else
+                        retSimUIModel.SelectedGear.HandsEnchant = retSimUIModel.EnchantsBySlot[Slot.Hands][0];
+                    break;
+                case 11:
+                    if (retSimUIModel.AllGear.ContainsKey(id))
+                        retSimUIModel.SelectedGear.SelectedFinger1 = retSimUIModel.AllGear[id];
+                    if (Items.Enchants.ContainsKey(enchantId))
+                        retSimUIModel.SelectedGear.Finger1Enchant = Items.Enchants[enchantId];
+                    else
+                        retSimUIModel.SelectedGear.Finger1Enchant = retSimUIModel.EnchantsBySlot[Slot.Finger][0];
+                    break;
+                case 12:
+                    if (retSimUIModel.AllGear.ContainsKey(id))
+                        retSimUIModel.SelectedGear.SelectedFinger2 = retSimUIModel.AllGear[id];
+                    if (Items.Enchants.ContainsKey(enchantId))
+                        retSimUIModel.SelectedGear.Finger2Enchant = Items.Enchants[enchantId];
+                    else
+                        retSimUIModel.SelectedGear.Finger2Enchant = retSimUIModel.EnchantsBySlot[Slot.Finger][0];
+                    break;
+                case 13:
+                    if (retSimUIModel.AllGear.ContainsKey(id))
+                        retSimUIModel.SelectedGear.SelectedTrinket1 = retSimUIModel.AllGear[id];
+                    break;
+                case 14:
+                    if (retSimUIModel.AllGear.ContainsKey(id))
+                        retSimUIModel.SelectedGear.SelectedTrinket2 = retSimUIModel.AllGear[id];
+                    break;
+                case 15:
+                    if (retSimUIModel.AllGear.ContainsKey(id))
+                        retSimUIModel.SelectedGear.SelectedBack = retSimUIModel.AllGear[id];
+                    if (Items.Enchants.ContainsKey(enchantId))
+                        retSimUIModel.SelectedGear.BackEnchant = Items.Enchants[enchantId];
+                    else
+                        retSimUIModel.SelectedGear.BackEnchant = retSimUIModel.EnchantsBySlot[Slot.Back][0];
+                    break;
+                case 16:
+                    if (retSimUIModel.AllWeapons.ContainsKey(id))
+                        retSimUIModel.SelectedGear.SelectedWeapon = retSimUIModel.AllWeapons[id];
+                    if (Items.Enchants.ContainsKey(enchantId))
+                        retSimUIModel.SelectedGear.WeaponEnchant = Items.Enchants[enchantId];
+                    else
+                        retSimUIModel.SelectedGear.WeaponEnchant = retSimUIModel.EnchantsBySlot[Slot.Weapon][0];
+                    break;
+                case 18:
+                    if (retSimUIModel.AllGear.ContainsKey(id))
+                        retSimUIModel.SelectedGear.SelectedRelic = retSimUIModel.AllGear[id];
+                    break;
             }
         }
 
